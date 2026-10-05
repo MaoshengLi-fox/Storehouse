@@ -1,0 +1,100 @@
+# Factory Desk V2 — production stack: Nginx (public 80/443) + app (internal only).
+#
+# Server-specific files live under FACTORY_HOME (default /opt/factory-desk) and survive code updates:
+#   factory.env       secrets: admin password …  (template: deploy/factory.env.example, chmod 600)
+#   nginx-site.conf   the active Nginx site (copy of deploy/docker/nginx-site-http.conf or -https.conf)
+#   data/             databases and backups (owned by uid 1000, the "node" user in the image)
+#   letsencrypt/      certificates (conf/) and ACME webroot (www/)
+#   logs/nginx/       Nginx access / error logs
+#
+#   docker compose up -d --build        start or update
+#   docker compose ps / logs -f app     status / logs
+# See DEPLOY_SERVER.md for the full procedure.
+name: factory-desk
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org/}
+        BETTER_SQLITE3_BINARY_HOST: ${BETTER_SQLITE3_BINARY_HOST:-}
+        INSTALL_BUILD_TOOLS: ${INSTALL_BUILD_TOOLS:-0}
+    image: factory-desk-app:${APP_VERSION:-latest}
+    restart: unless-stopped
+    init: true
+    env_file:
+      - ${FACTORY_HOME:-/opt/factory-desk}/factory.env
+    environment:
+      NODE_ENV: production
+      FACTORY_SHARED_HOST: 0.0.0.0           # inside the container; not published to the host
+      FACTORY_SHARED_PORT: "8787"
+      FACTORY_STORAGE_ROOT: /data
+      FACTORY_OFFSITE_DIR: /data/offsite      # full backups (npm run backup:full) → FACTORY_HOME/data/offsite
+      FACTORY_TRUSTED_PROXIES: 172.31.240.10  # only the Nginx container may set X-Real-IP
+    volumes:
+      - ${FACTORY_HOME:-/opt/factory-desk}/data:/data
+    networks:
+      backend:
+        ipv4_address: 172.31.240.20
+    # No "ports:" on purpose — the app is reachable only through Nginx on the internal network.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 768m
+    stop_grace_period: 20s
+    logging: *logging
+
+  nginx:
+    image: ${NGINX_IMAGE:-nginx:stable-alpine}
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx-factory-zones.conf:/etc/nginx/conf.d/00-factory-zones.conf:ro
+      - ./deploy/nginx-factory-common.conf:/etc/nginx/snippets/factory-desk-common.conf:ro
+      - ${FACTORY_HOME:-/opt/factory-desk}/nginx-site.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${FACTORY_HOME:-/opt/factory-desk}/letsencrypt/conf:/etc/letsencrypt:ro
+      - ${FACTORY_HOME:-/opt/factory-desk}/letsencrypt/www:/var/www/letsencrypt:ro
+      - ${FACTORY_HOME:-/opt/factory-desk}/logs/nginx:/var/log/nginx
+    networks:
+      edge: {}
+      backend:
+        ipv4_address: 172.31.240.10
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging
+
+  # Certificates (run on demand, see DEPLOY_SERVER.md):
+  #   docker compose run --rm certbot certonly --webroot -w /var/www/letsencrypt -d 你的域名
+  #   docker compose run --rm certbot renew && docker compose exec nginx nginx -s reload
+  certbot:
+    image: ${CERTBOT_IMAGE:-certbot/certbot:latest}
+    profiles: ["tools"]
+    volumes:
+      - ${FACTORY_HOME:-/opt/factory-desk}/letsencrypt/conf:/etc/letsencrypt
+      - ${FACTORY_HOME:-/opt/factory-desk}/letsencrypt/www:/var/www/letsencrypt
+    networks:
+      - edge
+
+networks:
+  edge: {}
+  backend:
+    internal: true           # no route to the internet; only nginx ↔ app
+    ipam:
+      config:
+        - subnet: 172.31.240.0/24

@@ -80,14 +80,35 @@ function assertAdmin(sessionUser) {
   }
 }
 
+const DEFAULT_ADMIN_PASSWORD = 'admin123!';
+// Admin accounts still using the built-in default password (checked at start-up and after resets).
+const defaultPasswordAdmins = new Set();
+
+function refreshDefaultPasswordAdmins() {
+  defaultPasswordAdmins.clear();
+  for (const row of authDb.prepare("SELECT id, password_hash, password_salt FROM users WHERE role = 'admin' AND is_active = 1").all()) {
+    if (sameHash(buildPasswordHash(DEFAULT_ADMIN_PASSWORD, row.password_salt), row.password_hash)) defaultPasswordAdmins.add(row.id);
+  }
+  if (defaultPasswordAdmins.size) console.warn('[auth] WARNING: an admin account still uses the default password admin123! — change it in 用户管理 before going live.');
+}
+
+export function securityWarningsFor(sessionUser) {
+  if (sessionUser?.role !== 'admin' || !defaultPasswordAdmins.size) return [];
+  return ['仍有管理员账号使用默认密码 admin123!，请立即在“用户管理”中重置为独立的强密码。'];
+}
+
 function upsertDefaultAdmin() {
   const username = String(process.env.FACTORY_ADMIN_USERNAME || 'admin').trim();
-  const password = String(process.env.FACTORY_ADMIN_PASSWORD || 'admin123!').trim();
+  const configured = String(process.env.FACTORY_ADMIN_PASSWORD || '').trim();
+  const password = configured || DEFAULT_ADMIN_PASSWORD;
   const displayName = String(process.env.FACTORY_ADMIN_DISPLAY_NAME || '系统管理员').trim();
 
   const existing = authDb.prepare('SELECT id FROM users WHERE username = ?').get(username);
   if (existing) {
     return;
+  }
+  if (process.env.NODE_ENV === 'production' && (password === DEFAULT_ADMIN_PASSWORD || password.length < 10 || /^ChangeTo|^REPLACE_WITH/i.test(password))) {
+    throw new Error('生产环境首次启动必须设置 FACTORY_ADMIN_PASSWORD（至少 10 位，且不能是默认值或模板占位符），见 DEPLOY_SERVER.md');
   }
 
   const salt = crypto.randomBytes(16).toString('hex');
@@ -139,6 +160,7 @@ export function initializeAuthDatabase(authDir) {
   `);
 
   upsertDefaultAdmin();
+  refreshDefaultPasswordAdmins();
 
   return dbPath;
 }
@@ -323,6 +345,7 @@ export function resetUserPassword(sessionUser, userId, newPassword, keepToken = 
     SET password_hash = ?, password_salt = ?, updated_at = ?
     WHERE id = ?
   `).run(passwordHash, salt, nowIso(), Number(userId));
+  defaultPasswordAdmins.delete(Number(userId));
   // Sign the account out everywhere (except the admin's own current session).
   authDb.prepare("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at = '' AND token_hash != ?")
     .run(nowIso(), Number(userId), keepToken ? sha256Hex(keepToken) : '');

@@ -10,8 +10,9 @@
     "build": "vite build",
     "test": "node --test",
     "preview": "vite preview",
-    "package:server": "mkdir -p release && tar --exclude='./node_modules' --exclude='./.git' --exclude='./release' --exclude='./.factory-server-data' -czf release/factory-desk-v2.tar.gz .",
-    "dev:full": "concurrently -k \"node server/index.js\" \"vite\""
+    "package:server": "mkdir -p release && tar --exclude='./node_modules' --exclude='./.git' --exclude='./release' --exclude='./dist' --exclude='./.factory-server-data' --exclude='./.env' --exclude='./.env.local' --exclude='./.env.production' --exclude='./factory.env' --exclude='*.log' --exclude='.DS_Store' -czf release/factory-desk-v2.tar.gz .",
+    "dev:full": "concurrently -k \"node server/index.js\" \"vite\"",
+    "backup:full": "node scripts/full-backup.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",

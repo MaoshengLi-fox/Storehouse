@@ -37,6 +37,7 @@ import {
   initializeAuthDatabase,
   listUsers,
   loginByPassword,
+  securityWarningsFor,
   resetUserPassword,
   revokeSessionByToken,
   setUserActiveStatus
@@ -46,7 +47,16 @@ import { initializeStorageLayout } from './storage.js';
 import { backupBeforeUpgrade, createBackupManager } from './backups.js';
 import { exportDocumentWorkbook } from './documentExport.js';
 
-const host = process.env.FACTORY_SHARED_HOST || '0.0.0.0';
+// Listen on loopback by default: in production only Nginx on the same machine should reach Node.
+const host = process.env.FACTORY_SHARED_HOST || '127.0.0.1';
+// Cross-origin access is off unless an explicit origin is configured (same-origin through Nginx needs none).
+const corsOrigin = String(process.env.FACTORY_CORS_ORIGIN || '').trim();
+const corsHeaders = corsOrigin ? {
+  'Access-Control-Allow-Origin': corsOrigin,
+  'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  Vary: 'Origin'
+} : {};
 const port = Number(process.env.FACTORY_SHARED_PORT || 8787);
 const storageRoot = process.env.FACTORY_STORAGE_ROOT || process.env.FACTORY_SHARED_DATA_DIR;
 const apiBasePath = '/api';
@@ -73,9 +83,9 @@ const contentTypes = {
 function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+    ...corsHeaders
   });
   res.end(JSON.stringify(payload));
 }
@@ -148,9 +158,32 @@ function getRequestOrigin(req) {
   }
 }
 
+// Reverse proxies whose X-Real-IP header is trusted: always loopback (Nginx on the same machine),
+// plus FACTORY_TRUSTED_PROXIES — comma-separated IPv4 addresses or CIDR ranges, e.g. the fixed
+// address of the Nginx container in docker-compose.yml. A client reaching Node from anywhere else
+// cannot fake its address to dodge the login throttle.
+function ipv4ToNumber(ip) {
+  const parts = String(ip).split('.');
+  if (parts.length !== 4 || parts.some((part) => !/^\d{1,3}$/.test(part) || Number(part) > 255)) return null;
+  return parts.reduce((total, part) => total * 256 + Number(part), 0);
+}
+const trustedProxies = String(process.env.FACTORY_TRUSTED_PROXIES || '').split(',').map((entry) => entry.trim()).filter(Boolean).map((entry) => {
+  const [address, bits = '32'] = entry.split('/');
+  const base = ipv4ToNumber(address), size = Number(bits);
+  if (base === null || !Number.isInteger(size) || size < 0 || size > 32) throw new Error(`FACTORY_TRUSTED_PROXIES 中的地址无效：${entry}`);
+  const span = 2 ** (32 - size);
+  return { start: base - (base % span), span };
+});
+function isTrustedProxy(socketIp) {
+  const ip = socketIp.startsWith('::ffff:') ? socketIp.slice(7) : socketIp;
+  if (ip === '::1' || ip.startsWith('127.')) return true;
+  const value = ipv4ToNumber(ip);
+  return value !== null && trustedProxies.some(({ start, span }) => value >= start && value < start + span);
+}
 function getClientIp(req) {
-  // nginx sets X-Real-IP (see deploy/nginx-factory.conf); fall back to the socket address.
-  return String(req.headers['x-real-ip'] || req.socket?.remoteAddress || '').trim();
+  const socketIp = String(req.socket?.remoteAddress || '');
+  if (isTrustedProxy(socketIp) && req.headers['x-real-ip']) return String(req.headers['x-real-ip']).trim();
+  return socketIp;
 }
 
 function buildBootstrap(req, session) {
@@ -172,6 +205,7 @@ function buildBootstrap(req, session) {
       authDbPath
     } : {},
     numberingSettings: getNumberingSettings(),
+    securityWarnings: securityWarningsFor(session?.user),
     user: session?.user || null
   };
 }
@@ -195,7 +229,9 @@ function sendStaticFile(res, filePath) {
 
   const ext = path.extname(filePath);
   const contentType = contentTypes[ext] || 'application/octet-stream';
-  res.writeHead(200, { 'Content-Type': contentType });
+  // Built assets carry a content hash in their name and never change; index.html must always be revalidated.
+  const cacheControl = filePath.includes(`${path.sep}assets${path.sep}`) ? 'public, max-age=31536000, immutable' : 'no-cache';
+  res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': cacheControl, 'X-Content-Type-Options': 'nosniff' });
   fs.createReadStream(filePath).pipe(res);
 }
 
@@ -327,7 +363,7 @@ const server = http.createServer(async (req, res) => {
         const body = await bodyWithActor(), document = generateDocument(body);
         const data = exportDocumentWorkbook(document, body.paper);
         const name = encodeURIComponent(`${document.customer.name}-${document.title}.xlsx`);
-        res.writeHead(200, { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': `attachment; filename*=UTF-8''${name}`, 'Access-Control-Allow-Origin': '*' });
+        res.writeHead(200, { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': `attachment; filename*=UTF-8''${name}`, 'Cache-Control': 'no-store', ...corsHeaders });
         res.end(data); return;
       }
 
@@ -372,7 +408,7 @@ const server = http.createServer(async (req, res) => {
         const id = decodeURIComponent(backupRoute[1]);
         if (backupRoute[2] === 'download' && req.method === 'GET') {
           const file = backups.filePath(id);
-          res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename="${id}"`, 'Access-Control-Allow-Origin': '*' });
+          res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename="${id}"`, 'Cache-Control': 'no-store', ...corsHeaders });
           const stream = fs.createReadStream(file);
           stream.on('error', () => res.destroy());
           stream.pipe(res); return;

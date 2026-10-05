@@ -34,14 +34,17 @@ henfeng/
 │   └── templates/document-styles.xlsx  单据 Excel 样式模板
 ├── shared/businessTypes.js     前后端共用：六个业务类型标签、批次汇总与校验规则
 ├── shared/documents.js         前后端共用：单据类型、默认抬头、纸张规格、分单规则
-├── deploy/nginx-factory.conf   Nginx 反向代理
-├── ecosystem.config.cjs        PM2 单进程配置
-├── .env.production.example     环境变量参考模板
+├── Dockerfile                  应用镜像（两阶段构建，非 root 运行）
+├── docker-compose.yml          生产部署：nginx（80/443）+ app（仅内部网络）+ certbot（按需）
+├── .dockerignore               构建上下文排除依赖、数据和私密文件
+├── deploy/                     Nginx 配置：限流区、公共安全片段；docker/ 下为容器用站点模板，nginx-factory*.conf 为宿主机（PM2）站点
+├── ecosystem.config.cjs        PM2 单进程配置（敏感配置从 /opt/factory-desk/factory.env 读取）
+├── deploy/factory.env.example  服务器 factory.env 模板（旧的 .env.production.example 已不再使用）
 ├── DEPLOY_SERVER.md            现有部署流程
 ├── docs/                       架构、登录存储和现状说明
 ├── tests/                      原业务回归、新模块回归及 HTTP 集成测试
 ├── electron/                   旧桌面版主进程、IPC、数据库及导出
-├── scripts/                    当前为空
+├── scripts/full-backup.mjs      整机备份：业务库 + 账号库 + 设置，在线备份并校验
 ├── .factory-server-data/       本地运行数据
 ├── dist/                       前端构建产物
 ├── release/                    历史发布归档
@@ -159,7 +162,7 @@ flowchart LR
 
 | 变量 | 使用位置 | 代码默认值/含义 |
 | --- | --- | --- |
-| `FACTORY_SHARED_HOST` | 服务端 | `0.0.0.0`；本地运行示例显式改为 `127.0.0.1` |
+| `FACTORY_SHARED_HOST` | 服务端 | `127.0.0.1`（只允许本机 Nginx 访问；生产环境由 `ecosystem.config.cjs` 固定） |
 | `FACTORY_BUSINESS_TIMEZONE` | 服务端/前端业务日期 | `Asia/Shanghai`，有效 IANA 时区 |
 | `FACTORY_SHARED_PORT` | 服务端 | `8787` |
 | `FACTORY_STORAGE_ROOT` | 服务端 | 项目根目录下 `.factory-server-data` |
@@ -168,9 +171,14 @@ flowchart LR
 | `FACTORY_ADMIN_PASSWORD` | 账号初始化 | 仅在对应用户名不存在时设置初始密码 |
 | `FACTORY_ADMIN_DISPLAY_NAME` | 账号初始化 | `系统管理员` |
 | `FACTORY_SESSION_TTL_HOURS` | 服务端 | `168` 小时 |
+| `FACTORY_CORS_ORIGIN` | 服务端 | 空 = 不发送跨域头；仅当网页与接口不同源时填写允许的来源 |
+| `FACTORY_TRUSTED_PROXIES` | 服务端 | 除本机外，可信任其 `X-Real-IP` 的反向代理地址（逗号分隔的 IPv4 或网段）；Docker 部署中为 nginx 容器 `172.31.240.10`，写错时拒绝启动 |
+| `FACTORY_ENV_FILE` | PM2 配置 | `/opt/factory-desk/factory.env`，存放管理员初始密码等敏感配置 |
+| `FACTORY_OFFSITE_DIR` / `FACTORY_OFFSITE_KEEP` | 整机备份脚本 | `/opt/factory-desk/offsite` / 保留 `30` 份 |
+| `NODE_ENV` | 服务端 | `production` 时，首次创建管理员必须提供至少 10 位的非默认密码 |
 | `VITE_FACTORY_API_BASE_URL` | Vite 前端 | 默认当前页面源下的 `/api`；开发代理指向 `127.0.0.1:8787`，可指定其他 API 地址 |
 
-服务端直接读取 `process.env`，没有自动加载 `.env` 的代码。PM2 当前读取 `ecosystem.config.cjs` 的 `env` 字段；`.env.production.example` 只是参考模板。Vite 变量在开发服务启动或构建时读取，修改生产前端的 API 地址需要重新构建。
+服务端直接读取 `process.env`，没有自动加载 `.env` 的代码。Docker 部署由 `docker-compose.yml` 通过 `env_file` 读取服务器上的 `factory.env`（模板为 `deploy/factory.env.example`），并覆盖监听地址、数据目录等项；PM2 部署则由 `ecosystem.config.cjs` 读取同一文件。Vite 变量在开发服务启动或构建时读取，修改生产前端的 API 地址需要重新构建。
 
 ## 相关说明
 

@@ -34,6 +34,9 @@
     </aside>
 
     <main class="content">
+      <div v-for="warning in state.bootstrap?.securityWarnings || []" :key="warning" class="security-banner" role="alert">
+        <AppIcon name="alert" /><span>{{ warning }}</span><RouterLink to="/users">去修改</RouterLink>
+      </div>
       <div class="toast-stack" aria-live="polite">
         <div
           v-for="item in notifications"

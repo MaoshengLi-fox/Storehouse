@@ -439,3 +439,9 @@ input::placeholder { color: #a0ada5; font-size: 11px; }
 
 /* 2026-09-30 experience fixes */
 .required-mark { color: #c0564b; font-style: normal; margin-left: 2px; }
+
+.security-banner { display: flex; align-items: center; gap: 10px; margin: 0 0 16px; padding: 12px 16px; border-radius: 12px;
+  background: #fbeceb; color: #8f2f26; border: 1px solid #f0c9c5; font-size: 13px; line-height: 1.6; }
+.security-banner svg { flex: none; width: 18px; height: 18px; }
+.security-banner span { flex: 1; }
+.security-banner a { color: #8f2f26; font-weight: 600; white-space: nowrap; }

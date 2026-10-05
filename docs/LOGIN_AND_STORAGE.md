@@ -26,7 +26,9 @@
 ## 2.1 登录与账号安全（2026-09-30）
 
 - 同一账号在同一 IP 连续输错密码 5 次，锁定 15 分钟；同一账号在所有 IP 合计输错 20 次也会锁定 15 分钟。锁定记录保存在服务内存中，重启服务后清零。
-- 限流按客户端真实 IP 计算，依赖 Nginx 传入 `X-Real-IP`（见 `deploy/nginx-factory.conf`）。
+- 限流按客户端真实 IP 计算，依赖 Nginx 传入 `X-Real-IP`（见 `deploy/nginx-factory-common.conf`）；Node 只信任来自本机或 `FACTORY_TRUSTED_PROXIES` 所列代理（Docker 部署中为 nginx 容器）的该请求头。Nginx 另外对登录接口做每 IP 每分钟 10 次的限流。
+- 生产环境（`NODE_ENV=production`）首次创建管理员时，必须提供至少 10 位的非默认密码，否则服务拒绝启动。
+- 如仍有管理员使用默认密码 `admin123!`，启动日志会警告，管理员页面顶部持续显示提醒，重置密码后消失。
 - 管理员重置某个用户的密码或停用该账号时，该用户所有设备上的登录会立即失效；管理员自己当前的会话不受影响。
 - 不能停用当前登录的管理员账号，也不能停用最后一个启用中的管理员。
 - 已停用账号输入正确密码时提示“账号已停用，请联系管理员”。
@@ -45,7 +47,7 @@
 
 这些变量用于创建账号，不会覆盖已有账号的密码。已有账号需要在管理员的用户管理页重置密码。
 
-服务端直接读取进程环境变量，不会自动加载 `.env.production`。PM2 部署时按[部署说明](../DEPLOY_SERVER.md)修改 `ecosystem.config.cjs` 的 `env` 字段。
+服务端直接读取进程环境变量，不会自动加载 `.env.production`。PM2 部署时把管理员初始密码等写在服务器的 `/opt/factory-desk/factory.env`（权限 600），由 `ecosystem.config.cjs` 读取，详见[部署说明](../DEPLOY_SERVER.md)。
 
 ## 4. 整体存储架构
 由 `FACTORY_STORAGE_ROOT` 控制根目录，默认会创建：
