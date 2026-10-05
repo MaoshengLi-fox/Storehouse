@@ -40,7 +40,9 @@ import {
   securityWarningsFor,
   resetUserPassword,
   revokeSessionByToken,
-  setUserActiveStatus
+  setUserActiveStatus,
+  updateUser,
+  deleteUser
 } from './auth.js';
 import { BUSINESS_TIMEZONE, businessToday } from './operations.js';
 import { initializeStorageLayout } from './storage.js';
@@ -324,6 +326,19 @@ const server = http.createServer(async (req, res) => {
         const userId = Number(pathname.split('/')[3]);
         const body = await readBody(req);
         sendJson(res, 200, { ok: true, data: resetUserPassword(authed.session.user, userId, body.password, authed.token) });
+        return;
+      }
+
+      if (pathname.match(/^\/api\/users\/\d+$/) && (req.method === 'PUT' || req.method === 'DELETE')) {
+        const authed = authRequired(req, res);
+        if (!authed) {
+          return;
+        }
+        const userId = Number(pathname.split('/')[3]);
+        const data = req.method === 'PUT'
+          ? updateUser(authed.session.user, userId, await readBody(req))
+          : deleteUser(authed.session.user, userId);
+        sendJson(res, 200, { ok: true, data });
         return;
       }
 

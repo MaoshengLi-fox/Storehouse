@@ -121,7 +121,7 @@ sudo nano /opt/factory-desk/factory.env              # 填入 FACTORY_ADMIN_PASS
 sudo cp /opt/factory-desk/current/deploy/docker/nginx-site-http.conf /opt/factory-desk/nginx-site.conf
 ```
 
-- `FACTORY_ADMIN_PASSWORD` 只在管理员账号**还不存在**时用来创建账号；之后改密码请在“用户管理”里重置。
+- `FACTORY_ADMIN_PASSWORD` 只在系统里**还没有任何管理员**时用来创建初始管理员；之后改密码、改用户名请在“用户管理”里操作。初始管理员被改名或删除后，重启服务也不会再按初始密码重新创建。
 - `factory.env` 中的数据目录、监听地址等项会被 `docker-compose.yml` 覆盖，不需要改。
 
 ## 4. 构建并启动

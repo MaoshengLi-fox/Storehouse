@@ -168,7 +168,7 @@ flowchart LR
 | `FACTORY_STORAGE_ROOT` | 服务端 | 项目根目录下 `.factory-server-data` |
 | `FACTORY_SHARED_DATA_DIR` | 服务端 | 旧存储目录变量，仅在未设置 `FACTORY_STORAGE_ROOT` 时使用 |
 | `FACTORY_ADMIN_USERNAME` | 账号初始化 | `admin` |
-| `FACTORY_ADMIN_PASSWORD` | 账号初始化 | 仅在对应用户名不存在时设置初始密码 |
+| `FACTORY_ADMIN_PASSWORD` | 账号初始化 | 仅在系统中没有任何管理员时用于创建初始管理员 |
 | `FACTORY_ADMIN_DISPLAY_NAME` | 账号初始化 | `系统管理员` |
 | `FACTORY_SESSION_TTL_HOURS` | 服务端 | `168` 小时 |
 | `FACTORY_CORS_ORIGIN` | 服务端 | 空 = 不发送跨域头；仅当网页与接口不同源时填写允许的来源 |

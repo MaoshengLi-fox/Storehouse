@@ -103,7 +103,9 @@ function upsertDefaultAdmin() {
   const password = configured || DEFAULT_ADMIN_PASSWORD;
   const displayName = String(process.env.FACTORY_ADMIN_DISPLAY_NAME || '系统管理员').trim();
 
-  const existing = authDb.prepare('SELECT id FROM users WHERE username = ?').get(username);
+  // Only bootstrap an admin when the system has none at all. Checking the username instead would
+  // silently re-create "admin" with the initial password after an admin renames or deletes it.
+  const existing = authDb.prepare("SELECT id FROM users WHERE username = ? OR role = 'admin'").get(username);
   if (existing) {
     return;
   }
@@ -298,6 +300,9 @@ export function createUser(sessionUser, payload) {
   if (!username) {
     throw new Error('用户名不能为空');
   }
+  if (/\s/.test(username) || username.length > 50) {
+    throw new Error('用户名不能包含空格，且不超过 50 个字符');
+  }
   if (!displayName) {
     throw new Error('显示名称不能为空');
   }
@@ -376,5 +381,62 @@ export function setUserActiveStatus(sessionUser, userId, isActive) {
   `).run(active ? 1 : 0, nowIso(), Number(userId));
   if (!active) authDb.prepare("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at = ''").run(nowIso(), Number(userId));
 
+  return { ok: true };
+}
+
+function otherActiveAdmins(userId) {
+  return authDb.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND is_active = 1 AND id != ?").get(Number(userId)).n;
+}
+
+function cleanAccountText(value, label, max = 50) {
+  const text = String(value ?? '').trim();
+  if (!text) throw new Error(`${label}不能为空`);
+  if (text.length > max) throw new Error(`${label}不能超过 ${max} 个字符`);
+  return text;
+}
+
+// Admin edits another account's login name, display name and role.
+// Login sessions stay valid (they are tied to the account id), and a role change applies to the
+// very next request because every request re-reads the role from the users table.
+export function updateUser(sessionUser, userId, payload = {}) {
+  assertAdmin(sessionUser);
+  const target = authDb.prepare('SELECT id, username, display_name, role, is_active FROM users WHERE id = ?').get(Number(userId));
+  if (!target) throw new Error('用户不存在');
+
+  const username = payload.username === undefined ? target.username : cleanAccountText(payload.username, '用户名');
+  if (/\s/.test(username)) throw new Error('用户名不能包含空格');
+  const displayName = payload.displayName === undefined ? target.display_name : cleanAccountText(payload.displayName, '显示名称');
+  const role = payload.role === undefined ? target.role : String(payload.role).trim();
+  if (!['admin', 'operator'].includes(role)) throw new Error('角色无效');
+
+  if (username !== target.username && authDb.prepare('SELECT 1 FROM users WHERE username = ? AND id != ?').get(username, target.id)) {
+    throw new Error('用户名已存在');
+  }
+  if (target.role === 'admin' && role !== 'admin') {
+    if (target.id === sessionUser.id) throw new Error('不能取消当前登录账号自己的管理员角色');
+    if (Number(target.is_active) === 1 && !otherActiveAdmins(target.id)) throw new Error('至少需要保留一个启用中的管理员');
+  }
+
+  authDb.prepare('UPDATE users SET username = ?, display_name = ?, role = ?, updated_at = ? WHERE id = ?')
+    .run(username, displayName, role, nowIso(), target.id);
+  if (role !== target.role) refreshDefaultPasswordAdmins();
+  return { ok: true };
+}
+
+// Permanently removes an account and signs it out everywhere. Business records keep the
+// operator names they were saved with, so history is unaffected.
+export function deleteUser(sessionUser, userId) {
+  assertAdmin(sessionUser);
+  const target = authDb.prepare('SELECT id, role, is_active FROM users WHERE id = ?').get(Number(userId));
+  if (!target) throw new Error('用户不存在');
+  if (target.id === sessionUser.id) throw new Error('不能删除当前登录的账号');
+  if (target.role === 'admin' && Number(target.is_active) === 1 && !otherActiveAdmins(target.id)) {
+    throw new Error('至少需要保留一个启用中的管理员');
+  }
+  authDb.transaction(() => {
+    authDb.prepare('DELETE FROM sessions WHERE user_id = ?').run(target.id);
+    authDb.prepare('DELETE FROM users WHERE id = ?').run(target.id);
+  })();
+  defaultPasswordAdmins.delete(target.id);
   return { ok: true };
 }

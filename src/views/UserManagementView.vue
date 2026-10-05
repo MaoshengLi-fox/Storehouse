@@ -25,6 +25,32 @@
       </form>
     </FormDialog>
 
+    <ConfirmDialog
+      :open="Boolean(deleteTarget)"
+      title="确认删除用户"
+      confirm-label="确认删除"
+      :message="deleteTarget ? `删除「${deleteTarget.username} / ${deleteTarget.displayName}」后，该账号会立即下线且无法再登录，此操作不能撤销。历史单据中记录的制表人、操作人姓名会保留。如只是暂时不用，建议改用“禁用”。` : ''"
+      @cancel="deleteTarget = null"
+      @confirm="confirmDeleteUser"
+    />
+
+    <FormDialog :open="showEditDialog" title="编辑用户" @cancel="closeEditDialog">
+      <form class="form-grid" @submit.prevent="submitEditUser">
+        <label><span>用户名（登录用）</span><input v-model.trim="editForm.username" type="text" required maxlength="50" /></label>
+        <label><span>显示名称</span><input v-model.trim="editForm.displayName" type="text" required maxlength="50" /></label>
+        <label>
+          <span>角色</span>
+          <select v-model="editForm.role" :disabled="editingSelf" required>
+            <option value="operator">普通用户</option>
+            <option value="admin">管理员</option>
+          </select>
+          <small v-if="editingSelf" class="form-note">不能修改当前登录账号自己的角色</small>
+        </label>
+        <p class="form-note form-span-2">修改用户名后，该用户下次登录需使用新用户名；已登录的设备不受影响。修改密码请使用“重置密码”。</p>
+        <div class="form-actions form-span-2"><button class="primary-button" type="submit" :disabled="saving">{{ saving ? '保存中…' : '保存修改' }}</button></div>
+      </form>
+    </FormDialog>
+
     <FormDialog :open="showResetDialog" title="重置密码" @cancel="closeResetDialog">
       <form class="form-grid" @submit.prevent="submitResetPassword">
         <label class="form-span-2"><span>用户</span><input :value="resetTargetLabel" type="text" disabled /></label>
@@ -64,7 +90,7 @@
       </form>
     </FormDialog>
 
-    <SectionCard title="用户管理" subtitle="仅管理员可见。可新增用户、重置密码、启用/禁用账号">
+    <SectionCard title="用户管理" subtitle="仅管理员可见。可新增、编辑、删除用户，重置密码，启用/禁用账号">
       <div class="table-toolbar">
         <div class="table-toolbar-left">
           <label class="search-field"><AppIcon name="search" /><input v-model.trim="keyword" class="toolbar-input" type="text" placeholder="搜索用户名或显示名称" aria-label="搜索用户名或显示名称" /></label>
@@ -85,11 +111,13 @@
           <el-table-column label="状态" min-width="100"><template #default="{ row }"><span class="status-pill" :data-status="row.isActive ? 'healthy' : 'warning'">{{ row.isActive ? '启用' : '禁用' }}</span></template></el-table-column>
           <el-table-column label="最后登录" min-width="150"><template #default="{ row }">{{ formatDateTime(row.lastLoginAt) }}</template></el-table-column>
           <el-table-column label="创建时间" min-width="150"><template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template></el-table-column>
-          <el-table-column label="操作" :fixed="wideScreen ? 'right' : false" min-width="180">
+          <el-table-column label="操作" :fixed="wideScreen ? 'right' : false" width="270">
             <template #default="{ row }">
               <div class="table-actions">
+                <button class="ghost-button" type="button" @click="openEditDialog(row)">编辑</button>
                 <button class="ghost-button" type="button" @click="openResetDialog(row)">重置密码</button>
                 <button class="ghost-button" type="button" :disabled="isSelf(row)" @click="toggleUserStatus(row)">{{ row.isActive ? '禁用' : '启用' }}</button>
+                <button class="ghost-button delete-action" type="button" :disabled="isSelf(row)" :title="isSelf(row) ? '不能删除当前登录的账号' : ''" @click="deleteTarget = row">删除</button>
               </div>
             </template>
           </el-table-column>
@@ -113,10 +141,17 @@ import AppIcon from '../components/AppIcon.vue';
 import EmptyState from '../components/EmptyState.vue';
 import { useNotifier } from '../composables/useNotifier.js';
 import { desktopApi } from '../lib/desktopApi.js';
+import { useAppData } from '../composables/useAppData.js';
 
 const { notifyError, notifySuccess } = useNotifier();
 
+const { state } = useAppData();
 const users = ref([]);
+const showEditDialog = ref(false);
+const editTarget = ref(null);
+const editForm = reactive({ username: '', displayName: '', role: 'operator' });
+const deleteTarget = ref(null);
+const saving = ref(false);
 const keyword = ref('');
 const showCreateDialog = ref(false);
 const showResetDialog = ref(false);
@@ -190,6 +225,52 @@ async function submitCreateUser() {
     notifySuccess('用户已创建');
   } catch (error) {
     notifyError(error.message || '创建用户失败');
+  }
+}
+
+const editingSelf = computed(() => Boolean(editTarget.value && isSelf(editTarget.value)));
+
+function openEditDialog(user) {
+  editTarget.value = user;
+  editForm.username = user.username;
+  editForm.displayName = user.displayName;
+  editForm.role = user.role;
+  showEditDialog.value = true;
+}
+
+function closeEditDialog() {
+  showEditDialog.value = false;
+  editTarget.value = null;
+}
+
+async function submitEditUser() {
+  if (!editTarget.value || saving.value) return;
+  saving.value = true;
+  try {
+    const self = editingSelf.value;
+    await desktopApi.updateUser(editTarget.value.id, { ...editForm });
+    await loadUsers();
+    // Keep the name shown in the sidebar in step when admins edit their own account.
+    if (self) state.bootstrap = await desktopApi.getBootstrapData();
+    closeEditDialog();
+    notifySuccess('用户信息已更新');
+  } catch (error) {
+    notifyError(error.message || '更新用户失败');
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function confirmDeleteUser() {
+  const target = deleteTarget.value;
+  deleteTarget.value = null;
+  if (!target) return;
+  try {
+    await desktopApi.deleteUser(target.id);
+    await loadUsers();
+    notifySuccess(`用户 ${target.username} 已删除`);
+  } catch (error) {
+    notifyError(error.message || '删除用户失败');
   }
 }
 
