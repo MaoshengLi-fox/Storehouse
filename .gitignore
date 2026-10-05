@@ -1,0 +1,14 @@
+# Dependencies and generated artifacts
+node_modules/
+dist/
+release/
+
+# Runtime data and local configuration
+.factory-server-data/
+.env
+.env.*
+!.env*.example
+*.log
+
+# OS metadata
+.DS_Store
